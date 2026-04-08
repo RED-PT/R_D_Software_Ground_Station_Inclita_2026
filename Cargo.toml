@@ -4,8 +4,9 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-axum = "0.8.8"
 rppal = "0.22.1"
-serde = "1.0.228"
-tokio = "1.51.1"
-tower-http = "0.6.8"
+serde_json = "1.0.149"
+tower-http = { version = "0.6.8", features = ["fs"] }  #for using wifi ap
+axum = { version = "0.7.0", features = ["ws"] }
+tokio = { version = "1.49.0", features = ["full"] }    #for async rust
+serde = { version = "1.0.228", features = ["derive"] } # for deserialy CSV

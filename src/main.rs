@@ -8,6 +8,8 @@ use axum::{
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
 use tower_http::services::ServeFile;
+use std::fs::OpenOptions;
+use std::io::Write; // You will also need this for the writeln! macro to work!
 
 use rppal::gpio::{Gpio, Trigger};
 use rppal::spi::{Bus, Mode, SlaveSelect, Spi};
@@ -15,13 +17,14 @@ use std::time::Duration;
 
 mod handlers;
 mod telemetry;
+use telemetry::data;
 use handlers::sockets_handler::{AppState, ws_handler};
 
 #[tokio::main]
 async fn main() {
     println!("Starting Cyberdeck Groundstation...");
 
-    let (telemetry_tx, _) = broadcast::channel::<protocol::Telemetry>(100);
+    let (telemetry_tx, _) = broadcast::channel::<data::Telemetry>(100);
     let (command_tx, mut command_rx) = mpsc::channel::<String>(32);
 
     let shared_state = Arc::new(AppState {
@@ -37,7 +40,7 @@ async fn main() {
 
     // Set up the DIO0 pin (usually GPIO 25) for the RX interrupt
     let mut dio0_pin = gpio.get(25).unwrap().into_input();
-    dio0_pin.set_interrupt(Trigger::RisingEdge).unwrap();
+    dio0_pin.set_interrupt(Trigger::RisingEdge, None).unwrap();
 
     // Initialize your LoRa driver (Pseudo-code, depends on the crate you use)
     // let mut lora = LoRa::new(spi, cs_pin, reset_pin, freq_868).unwrap();
@@ -112,4 +115,23 @@ async fn main() {
         .unwrap();
 }
 
-// ... shutdown_signal and mock_ingest remain the same ...
+async fn shutdown_signal() {
+    tokio::signal::ctrl_c()
+        .await
+        .expect("Failed to install CTRL+C signal handler");
+    println!("\nShutting down Ground Station server gracefully...");
+}
+
+// ... your mock_ingest function stays the same below ...
+
+///Mock for simulating  data comming from the rocket
+async fn mock_ingest(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<data::Telemetry>,
+) -> &'static str {
+    // JSON data is into the broadcast pipe
+    // It doesn't care who is listening; it just broadcasts the signal
+    let _ = state.telemetry_tx.send(payload);
+    "Data Received"
+}
+
