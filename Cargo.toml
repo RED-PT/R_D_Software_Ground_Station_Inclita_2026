@@ -10,3 +10,21 @@ tower-http = { version = "0.6.8", features = ["fs"] }  #for using wifi ap
 axum = { version = "0.7.0", features = ["ws"] }
 tokio = { version = "1.49.0", features = ["full"] }    #for async rust
 serde = { version = "1.0.228", features = ["derive"] } # for deserialy CSV
+log = "0.4.29"
+
+
+
+[dependencies.sx127x_lora] 
+version = "0.3.1"
+optional = true
+
+
+
+[features]
+# Feature to enable LoRa radio support
+# This makes sx127x-lora dependency available when enabled
+lora = ["dep:sx127x_lora"]
+
+# Default features (enable LoRa by default)
+default = ["lora"]
+no-hardware-mock = []
