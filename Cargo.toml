@@ -8,23 +8,21 @@ rppal = "0.22.1"
 serde_json = "1.0.149"
 tower-http = { version = "0.6.8", features = ["fs"] }  #for using wifi ap
 axum = { version = "0.7.0", features = ["ws"] }
-tokio = { version = "1.49.0", features = ["full"] }    #for async rust
+tokio = { version = "1.49.0", features = ["full", "time", "sync", "signal"] }    #for async rust
 serde = { version = "1.0.228", features = ["derive"] } # for deserialy CSV
 log = "0.4.29"
+bincode = "2.0.1"
+embedded-hal = "1.0.0"
+embedded-hal-bus = "0.3.0"
 
 
-
-[dependencies.sx127x_lora] 
-version = "0.3.1"
-optional = true
+sx127x_lora = { version = "0.3.1", optional = true, default-features = false }
+linux-embedded-hal = "0.4.1"
 
 
 
 [features]
-# Feature to enable LoRa radio support
-# This makes sx127x-lora dependency available when enabled
 lora = ["dep:sx127x_lora"]
-
-# Default features (enable LoRa by default)
 default = ["lora"]
 no-hardware-mock = []
+

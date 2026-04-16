@@ -8,9 +8,8 @@ use axum::{
 };
 
 use std::sync::Arc;
-use tokio::{sync::{broadcast, mpsc, Mutex}, Duration};
+use tokio::{sync::{broadcast, mpsc, Mutex}, time::Duration};
 use tower_http::services::ServeFile;
-use tokio::fs::OpenOptions;
 
 
 
@@ -71,7 +70,7 @@ async fn main() {
             // ------------------------------------------------------------------
             let ingest_tx = telemetry_tx.clone();
             tokio::task::spawn_blocking(move || {
-                let mut log_file = match OpenOptions::new()
+                let mut log_file = match std::fs::OpenOptions::new()
                     .create(true)
                     .append(true)
                     .open("lora_telemetry.log") {
@@ -103,7 +102,7 @@ async fn main() {
                             }
                         }
                     } else {
-                        tokio::time::sleep(Duration::from_millis(10)).await;
+                        std::thread::sleep(Duration::from_millis(10));
                     }
                 }
             });
@@ -165,7 +164,8 @@ async fn main() {
 // ------------------------------------------------------------------
 pub async fn shutdown_signal() {
     let ctrl_c = async { tokio::signal::ctrl_c().await.unwrap() };
-    let _term = async { tokio::signal::keyboard_interrupt().await };
+    
+    let _term = async { tokio::signal::terminal().await };
     
     tokio::select! {
         _ = ctrl_c => println!("Received shutdown signal, cleaning up..."),
@@ -174,7 +174,6 @@ pub async fn shutdown_signal() {
     
     println!("Goodbye!");
 }
-
 // ------------------------------------------------------------------
 // MOCK INGEST HANDLER
 // ------------------------------------------------------------------
