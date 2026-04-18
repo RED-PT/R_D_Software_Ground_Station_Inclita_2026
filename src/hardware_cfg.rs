@@ -1,57 +1,48 @@
 // hardware_cfg.rs
-#[cfg(feature = "lora")]
-use sx127x_lora::{LoRa, Error as LoRaError};
-use rppal::gpio::{Gpio, Trigger, OutputPin as RppalOutputPin};
+use embedded_hal::delay::DelayNs;
+use radio::{Receive, Transmit};
+use radio_sx127x::{Sx127x, device::sx1276::Sx1276};
+use rppal::gpio::{Gpio, InputPin, OutputPin};
 use rppal::spi::{Bus, Mode, SlaveSelect, Spi};
-use std::sync::Arc;
 use std::time::Duration;
 
-// IMPORTANT: sx127x_lora 0.3.1 requires embedded-hal 0.2.x traits (the v2 module)
-use embedded_hal::digital::v2::OutputPin; 
+// 1. Linux Delay Provider for embedded-hal 1.0
+// The radio needs this to know how to "sleep" during initialization
+pub struct LinuxDelay;
+impl DelayNs for LinuxDelay {
+    fn delay_ns(&mut self, ns: u32) {
+        std::thread::sleep(Duration::from_nanos(ns as u64));
+    }
+}
 
-/// Custom error types for hardware operations
+// 2. Custom Error Types
 #[derive(Debug)]
 pub enum HardwareError {
     SpiCreation(String),
     GpioCreation(String),
-    InterruptSetup(String),
     PinInitialization(u8, String),
-    #[cfg(feature = "lora")]
-    // The LoRa error needs 3 generics: SPI, CS, and RESET types.
-    LoRaInitialization(LoRaError<Spi, RppalOutputPin, RppalOutputPin>),
-    Deserialization(String), 
-    Io(std::io::Error),
+    LoRaInitialization(String),
+    TransmitError(String),
+    ReceiveError(String),
 }
 
 impl std::fmt::Display for HardwareError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            HardwareError::SpiCreation(msg) => write!(f, "SPI creation: {}", msg),
-            HardwareError::GpioCreation(msg) => write!(f, "GPIO creation: {}", msg),
-            HardwareError::InterruptSetup(msg) => write!(f, "Interrupt setup: {}", msg),
-            HardwareError::PinInitialization(pin, msg) => write!(f, "Pin {} init: {}", pin, msg),
-            #[cfg(feature = "lora")]
-            HardwareError::LoRaInitialization(err) => write!(f, "LoRa init error: {:?}", err),
-            HardwareError::Deserialization(err) => write!(f, "Deserialization error: {}", err),
-            HardwareError::Io(err) => write!(f, "IO error: {}", err),
-        }
+        write!(f, "{:?}", self)
     }
 }
-
 impl std::error::Error for HardwareError {}
 
-#[cfg(feature = "lora")]
-pub struct LoRaHandle {
-    // We define the concrete types here so you don't have to carry generics everywhere
-    pub radio: LoRa<Spi, RppalOutputPin, RppalOutputPin, Duration>,
-}
+// 3. Concrete Type Alias - NO MORE GENERIC HELL!
+// This locks the radio to exact rppal types.
+pub type Rfm95Radio = Sx127x<Sx1276, Spi, OutputPin, OutputPin, LinuxDelay>;
 
 pub struct Hardware {
-    pub spi: Spi,
-    pub dio0_pin: rppal::gpio::InputPin,
-    pub cs_pin: Option<RppalOutputPin>,
-    pub reset_pin: Option<RppalOutputPin>,
-    pub radio: Option<LoRaHandle>,
+    pub spi_bus: Option<Spi>,
+    pub cs_pin: Option<OutputPin>,
+    pub reset_pin: Option<OutputPin>,
+    pub dio0_pin: InputPin,
+    pub radio: Option<Rfm95Radio>,
 }
 
 impl Hardware {
@@ -59,59 +50,87 @@ impl Hardware {
         let spi = Spi::new(Bus::Spi0, SlaveSelect::Ss0, 8_000_000, Mode::Mode0)
             .map_err(|e| HardwareError::SpiCreation(e.to_string()))?;
 
-        let gpio = Gpio::new()
-            .map_err(|e| HardwareError::GpioCreation(e.to_string()))?;
+        let gpio = Gpio::new().map_err(|e| HardwareError::GpioCreation(e.to_string()))?;
 
-        let dio0_pin = gpio.get(25)
+        // DIO0 Interrupt Pin
+        let dio0_pin = gpio
+            .get(25)
             .map_err(|e| HardwareError::PinInitialization(25, e.to_string()))?
             .into_input();
-        
-        let mut cs_pin = gpio.get(cs_gpio)
+
+        // Chip Select
+        let mut cs_pin = gpio
+            .get(cs_gpio)
             .map_err(|e| HardwareError::PinInitialization(cs_gpio, e.to_string()))?
             .into_output();
         cs_pin.set_high();
 
-        let mut reset_pin = gpio.get(rst_gpio)
+        // Reset
+        let mut reset_pin = gpio
+            .get(rst_gpio)
             .map_err(|e| HardwareError::PinInitialization(rst_gpio, e.to_string()))?
             .into_output();
         reset_pin.set_high();
 
         Ok(Self {
-            spi,
-            dio0_pin,
+            spi_bus: Some(spi),
             cs_pin: Some(cs_pin),
             reset_pin: Some(reset_pin),
+            dio0_pin,
             radio: None,
         })
     }
 
-    #[cfg(feature = "lora")]
     pub fn init_radio(&mut self) -> Result<(), HardwareError> {
-        // Move pins out of Option to give ownership to the LoRa driver
-        let cs = self.cs_pin.take().ok_or(HardwareError::PinInitialization(0, "CS missing".into()))?;
-        let rst = self.reset_pin.take().ok_or(HardwareError::PinInitialization(0, "RST missing".into()))?;
+        // Move the pins into the driver
+        let spi = self
+            .spi_bus
+            .take()
+            .ok_or(HardwareError::LoRaInitialization("SPI missing".into()))?;
+        let cs = self
+            .cs_pin
+            .take()
+            .ok_or(HardwareError::LoRaInitialization("CS missing".into()))?;
+        let rst = self
+            .reset_pin
+            .take()
+            .ok_or(HardwareError::LoRaInitialization("RST missing".into()))?;
+        let delay = LinuxDelay;
 
-        // rppal::Spi implements Clone, so we can use it here
-        match LoRa::new(self.spi.clone(), cs, rst, 868, Duration::from_millis(10)) {
-            Ok(mut radio) => {
-                let _ = radio.set_signal_bandwidth(500_000);
-                let _ = radio.set_spreading_factor(7);
-                let _ = radio.set_tx_power(17, 1);
-                
-                self.radio = Some(LoRaHandle { radio });
+        // Initialize the SX1276 (RFM95)
+        match Sx127x::spi(spi, cs, rst, delay, Sx1276::new()) {
+            Ok(radio) => {
+                self.radio = Some(radio);
                 Ok(())
             }
-            Err(e) => Err(HardwareError::LoRaInitialization(e)),
+            Err(_) => Err(HardwareError::LoRaInitialization(
+                "Failed to init SX127x".into(),
+            )),
         }
     }
 
     pub fn transmit_command(&mut self, cmd: &str) -> Result<(), HardwareError> {
-        if let Some(ref mut handle) = self.radio {
-            handle.radio.transmit(cmd.as_bytes())
-                .map_err(|e| HardwareError::LoRaInitialization(e))?;
+        if let Some(ref mut r) = self.radio {
+            r.transmit(cmd.as_bytes())
+                .map_err(|_| HardwareError::TransmitError("TX failed".into()))?;
             Ok(())
         } else {
-            Err(HardwareError::PinInitialization(0, "Radio not initialized".into()))
+            Err(HardwareError::TransmitError("Radio not initialized".into()))
+        }
+    }
+
+    // Abstracted Read method so main.rs doesn't need to know how the radio works
+    pub fn read_packet(&mut self) -> Result<Vec<u8>, HardwareError> {
+        if let Some(ref mut r) = self.radio {
+            let mut buffer = [0u8; 255];
+
+            // The radio crate provides standard receive traits
+            match r.receive(&mut buffer) {
+                Ok(_) => Ok(buffer.to_vec()),
+                Err(_) => Err(HardwareError::ReceiveError("RX failed".into())),
+            }
+        } else {
+            Err(HardwareError::ReceiveError("Radio not initialized".into()))
         }
     }
 }
