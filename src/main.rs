@@ -1,113 +1,131 @@
-//! user imports
-use axum::{
-    Json, Router,
-    extract::State,
-    routing::{get, post},
-};
-
+use axum::{Router, routing::get};
 use std::sync::Arc;
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc, Mutex};
 use tower_http::services::ServeFile;
-use std::fs::OpenOptions;
-use std::io::Write; // You will also need this for the writeln! macro to work!
 
-use rppal::gpio::{Gpio, Trigger};
-use rppal::spi::{Bus, Mode, SlaveSelect, Spi};
-use std::time::Duration;
+pub use crate::telemetry::data::Telemetry;
 
+mod mock;
 mod handlers;
 mod telemetry;
-use telemetry::data;
+
+// Only include the hardware module if we are NOT mocking
+#[cfg(not(feature = "mock"))]
+mod hardware_cfg;
+#[cfg(not(feature = "mock"))]
+pub use crate::hardware_cfg::{Hardware, HardwareError};
+#[cfg(not(feature = "mock"))]
+use embedded_hal::digital::v2::InputPin;
+#[cfg(not(feature = "mock"))]
+use tokio::time::Duration;
+
 use handlers::sockets_handler::{AppState, ws_handler};
 
 #[tokio::main]
 async fn main() {
-    println!("Starting Cyberdeck Groundstation...");
-
-    let (telemetry_tx, _) = broadcast::channel::<data::Telemetry>(100);
+    let (telemetry_tx, _) = broadcast::channel::<Telemetry>(100);
     let (command_tx, mut command_rx) = mpsc::channel::<String>(32);
 
-    let shared_state = Arc::new(AppState {
-        telemetry_tx: telemetry_tx.clone(), // Clone for the Ingest thread to use
-        command_tx,
-    });
+    // ==========================================
+    // TIMELINE 1: MOCK MODE (Compiled on Laptop)
+    // ==========================================
+    #[cfg(feature = "mock")]
+    {
+        println!("🚀 Starting Groundstation in COMPILE-TIME MOCK MODE...");
 
-    // ------------------------------------------------------------------
-    // 1. HARDWARE SETUP: Replace Serial with SPI & GPIO
-    // ------------------------------------------------------------------
-    let spi = Spi::new(Bus::Spi0, SlaveSelect::Ss0, 8_000_000, Mode::Mode0).unwrap();
-    let gpio = Gpio::new().unwrap();
+        let shared_state = Arc::new(AppState {
+            telemetry_tx: telemetry_tx.clone(),
+            command_tx,
+        });
 
-    // Set up the DIO0 pin (usually GPIO 25) for the RX interrupt
-    let mut dio0_pin = gpio.get(25).unwrap().into_input();
-    dio0_pin.set_interrupt(Trigger::RisingEdge, None).unwrap();
+        // 1. Start Mock Ingest
+        mock::spawn_mock_telemetry_task(shared_state.telemetry_tx.clone());
 
-    // Initialize your LoRa driver (Pseudo-code, depends on the crate you use)
-    // let mut lora = LoRa::new(spi, cs_pin, reset_pin, freq_868).unwrap();
+        // 2. Start Mock Transmit Task
+        tokio::spawn(async move {
+            while let Some(cmd) = command_rx.recv().await {
+                println!("[MOCK TX] Pretending to send command: {}", cmd);
+            }
+        });
 
-    println!("LoRa Radio initialized on SPI0.");
+        start_server(shared_state).await;
+    }
 
-    // ------------------------------------------------------------------
-    // 2. THE INGEST TASK (Replaces your std::thread::spawn serial loop)
-    // ------------------------------------------------------------------
-    // We use spawn_blocking because rppal's poll_interrupt blocks the thread
-    let ingest_tx = telemetry_tx.clone();
-    tokio::task::spawn_blocking(move || {
-        let mut log_file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open("lora_telemetry.log")
-            .expect("Failed to open log file");
+    // ==========================================
+    // TIMELINE 2: HARDWARE MODE (Compiled on Pi)
+    // ==========================================
+    #[cfg(not(feature = "mock"))]
+    {
+        println!("📡 Starting Groundstation in REAL HARDWARE MODE...");
 
-        writeln!(log_file, "\n--- NEW LAUNCH SESSION ---").unwrap();
+        const CS_GPIO: u64 = 10;
+        const RST_GPIO: u64 = 5;
 
-        loop {
-            // Wait for the LoRa module to pull DIO0 high (Packet Received!)
-            // Timeout of 1 second so the thread isn't locked forever
-            if let Ok(Some(_)) = dio0_pin.poll_interrupt(true, Some(Duration::from_secs(1))) {
+        match Hardware::new(CS_GPIO.into(), RST_GPIO.into()) {
+            Ok(mut hw) => {
+                if let Err(e) = hw.init_radio() {
+                    eprintln!("RFM95 initialization failed: {}", e);
+                    std::process::exit(1);
+                }
+                println!("RFM95 LoRa Radio initialized!");
 
-                // 1. Read data from SPI (Depends on your LoRa crate)
-                // let buffer = lora.read_packet().unwrap();
+                let shared_state = Arc::new(AppState {
+                    telemetry_tx: telemetry_tx.clone(),
+                    command_tx,
+                    hardware: Arc::new(Mutex::new(hw)),
+                });
 
-                // 2. Deserialize your payload bytes into the Telemetry struct
-                // let telemetry: protocol::Telemetry = bincode::deserialize(&buffer).unwrap();
+                // 1. Start Hardware Ingest
+                let ingest_state = shared_state.clone();
+                tokio::task::spawn_blocking(move || {
+                    loop {
+                        {
+                            let mut hw_lock = ingest_state.hardware.blocking_lock();
+                            if hw_lock.dio0_pin.is_high().unwrap_or(false) {
+                                if let Ok(ref buffer) = hw_lock.read_packet() {
+                                    if let Ok(data) = bincode::deserialize::<Telemetry>(buffer) {
+                                        println!("Received Telemetry! Pressure: {}", data.pressure);
+                                        let _ = ingest_state.telemetry_tx.send(data);
+                                    }
+                                }
+                            }
+                        }
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                });
 
-                // 3. Log it
-                // writeln!(log_file, "{:?}", telemetry).unwrap();
+                // 2. Start Hardware Transmit
+                let tx_state = shared_state.clone();
+                tokio::spawn(async move {
+                    while let Some(cmd) = command_rx.recv().await {
+                        let mut hw_lock = tx_state.hardware.lock().await;
+                        if let Err(e) = hw_lock.transmit_command(&cmd) {
+                            eprintln!("TX Error: {}", e);
+                        } else {
+                            println!("Command '{}' transmitted successfully.", cmd);
+                        }
+                    }
+                });
 
-                // 4. Send it to the Dashboard
-                // let _ = ingest_tx.send(telemetry);
+                start_server(shared_state).await;
+            }
+            Err(e) => {
+                eprintln!("Hardware init failed: {}", e);
+                std::process::exit(1);
             }
         }
-    });
+    }
+}
 
-    // ------------------------------------------------------------------
-    // 3. THE TRANSMIT TASK (Replaces your serial write task)
-    // ------------------------------------------------------------------
-    tokio::spawn(async move {
-        while let Some(cmd) = command_rx.recv().await {
-            println!("RADIO LINK: Sending command '{}' to rocket", cmd);
-
-            // Because SPI is blocking, if you send commands while receiving,
-            // you might need a Mutex around the SPI bus, or handle transmission
-            // in a dedicated blocking thread that safely shares the radio instance.
-
-            // let payload = cmd.as_bytes();
-            // lora.transmit_payload(payload).unwrap();
-        }
-    });
-
-    // ------------------------------------------------------------------
-    // 4. THE WEB SERVER (Stays exactly the same)
-    // ------------------------------------------------------------------
+// Extracted server startup so we don't write it twice
+async fn start_server(shared_state: Arc<AppState>) {
     let app = Router::new()
         .nest_service("/", ServeFile::new("html/index.html"))
         .route("/ws", get(ws_handler))
-        .route("/mock-ingest", post(mock_ingest))
         .with_state(shared_state);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
-    println!("Ground Station Server live on port 3000");
+    println!("Ground Station UI available at: http://0.0.0.0:3000");
 
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
@@ -115,23 +133,7 @@ async fn main() {
         .unwrap();
 }
 
-async fn shutdown_signal() {
-    tokio::signal::ctrl_c()
-        .await
-        .expect("Failed to install CTRL+C signal handler");
-    println!("\nShutting down Ground Station server gracefully...");
+pub async fn shutdown_signal() {
+    tokio::signal::ctrl_c().await.unwrap();
+    println!("Shutdown signal received. Powering down.");
 }
-
-// ... your mock_ingest function stays the same below ...
-
-///Mock for simulating  data comming from the rocket
-async fn mock_ingest(
-    State(state): State<Arc<AppState>>,
-    Json(payload): Json<data::Telemetry>,
-) -> &'static str {
-    // JSON data is into the broadcast pipe
-    // It doesn't care who is listening; it just broadcasts the signal
-    let _ = state.telemetry_tx.send(payload);
-    "Data Received"
-}
-

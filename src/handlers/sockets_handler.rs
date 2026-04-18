@@ -8,8 +8,9 @@ use axum::{
 
 use serde_json;
 use std::sync::Arc;
-use tokio::sync::{broadcast, mpsc};
-
+use tokio::sync::{broadcast, mpsc, Mutex};
+#[cfg(not(feature = "mock"))]
+use crate::hardware_cfg::Hardware; // Import from hardware module
 use crate::telemetry::data::Telemetry;
 pub struct AppState {
     // Broadcasts telemetry to all connected WebSocket clients
@@ -18,6 +19,10 @@ pub struct AppState {
     // Sends commands from Web interface to reocket : any dashboards can send commands,
     // but they all funnel down to one single "Radio Link" task that talks to the rocke
     pub command_tx: mpsc::Sender<String>,
+
+
+    #[cfg(not(feature = "mock"))]
+    pub hardware: Arc<Mutex<Hardware>>,
 }
 
 // 2. WebSocket Upgrade

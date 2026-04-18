@@ -4,9 +4,19 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-rppal = "0.22.1"
-serde_json = "1.0.149"
-tower-http = { version = "0.6.8", features = ["fs"] }  #for using wifi ap
-axum = { version = "0.7.0", features = ["ws"] }
-tokio = { version = "1.49.0", features = ["full"] }    #for async rust
-serde = { version = "1.0.228", features = ["derive"] } # for deserialy CSV
+axum = {version = "0.7.9", features = ["ws"]}
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+bincode = "1.3.3"
+tower-http = { version = "0.5.2", features = ["fs"] }
+
+# Linux-Native Hardware Stack
+linux-embedded-hal = "0.3.2"
+sx127x_lora = "0.3.1"
+embedded-hal = "0.2.7"
+
+
+[features]
+default = []
+mock = []

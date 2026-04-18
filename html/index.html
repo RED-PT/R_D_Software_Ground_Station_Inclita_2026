@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>INCLITA Command Center</title>
+    <style>
+        /* Catppuccin Mocha Palette */
+        :root {
+            --base: #1e1e2e;
+            --mantle: #181825;
+            --crust: #11111b;
+            --text: #cdd6f4;
+            --subtext0: #a6adc8;
+            --surface0: #313244;
+            --surface1: #45475a;
+            
+            --blue: #89b4fa;
+            --mauve: #cba6f7;
+            --green: #a6e3a1;
+            --red: #f38ba8;
+            --yellow: #f9e2af;
+            --peach: #fab387;
+
+            --bg-color: var(--base);
+            --panel-bg: var(--mantle);
+            --border-color: var(--surface0);
+            --text-main: var(--text);
+            
+            --font-mono: 'JetBrains Mono', 'Fira Code', 'Courier New', Courier, monospace;
+        }
+
+        body {
+            background-color: var(--bg-color);
+            color: var(--text-main);
+            font-family: var(--font-mono);
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            height: 95vh;
+            box-sizing: border-box;
+        }
+
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 2px solid var(--border-color);
+            padding-bottom: 15px;
+            margin-bottom: 20px;
+        }
+
+        h1 {
+            margin: 0;
+            color: var(--mauve);
+            letter-spacing: 1px;
+        }
+
+        .status-indicator {
+            padding: 8px 20px;
+            border-radius: 8px;
+            font-weight: bold;
+            background-color: var(--surface0);
+            color: var(--red);
+            border: 1px solid var(--red);
+            letter-spacing: 1px;
+            transition: all 0.3s ease;
+        }
+
+        .dashboard-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+
+        .panel {
+            background-color: var(--panel-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 20px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+
+        .panel h2 {
+            margin-top: 0;
+            color: var(--blue);
+            font-size: 1.1rem;
+            border-bottom: 1px solid var(--border-color);
+            padding-bottom: 10px;
+            letter-spacing: 1px;
+        }
+
+        .data-row {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 12px;
+            font-size: 1.1rem;
+            color: var(--subtext0);
+        }
+
+        .data-value {
+            font-weight: bold;
+            color: var(--text);
+        }
+
+        .controls {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+
+        button {
+            background-color: var(--surface0);
+            color: var(--text);
+            border: 1px solid var(--surface1);
+            padding: 12px 24px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-family: var(--font-mono);
+            font-weight: bold;
+            transition: all 0.2s;
+            flex-grow: 1;
+        }
+
+        button:hover {
+            background-color: var(--surface1);
+            color: var(--blue);
+            border-color: var(--blue);
+        }
+
+        button.danger {
+            color: var(--red);
+        }
+
+        button.danger:hover {
+            background-color: var(--surface1);
+            color: var(--red);
+            border-color: var(--red);
+        }
+
+        /* The Raw Data Terminal Terminal */
+        .terminal-wrapper {
+            flex-grow: 1;
+            display: flex;
+            flex-direction: column;
+            background-color: var(--crust);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: inset 0 2px 10px rgba(0,0,0,0.2);
+        }
+
+        .terminal-header {
+            background-color: var(--surface0);
+            color: var(--subtext0);
+            padding: 8px 15px;
+            font-size: 0.85rem;
+            letter-spacing: 1px;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        #raw-log {
+            padding: 15px;
+            overflow-y: auto;
+            flex-grow: 1;
+            font-size: 0.9rem;
+            color: var(--text);
+            line-height: 1.5;
+        }
+
+        .log-entry { margin-bottom: 6px; }
+        .log-time { color: var(--surface1); margin-right: 10px; }
+
+        /* Custom Scrollbar for the terminal */
+        ::-webkit-scrollbar { width: 10px; }
+        ::-webkit-scrollbar-track { background: var(--crust); border-radius: 0 12px 12px 0; }
+        ::-webkit-scrollbar-thumb { background: var(--surface0); border-radius: 5px; }
+        ::-webkit-scrollbar-thumb:hover { background: var(--surface1); }
+    </style>
+</head>
+<body>
+
+    <header>
+        <h1>INCLITA :: Ground Station</h1>
+        <div id="connection-status" class="status-indicator">ERR_NOLINK</div>
+    </header>
+
+    <div class="dashboard-grid">
+        <div class="panel">
+            <h2>Environment</h2>
+            <div class="data-row"><span>Pressure</span> <span id="pressure" class="data-value">0</span></div>
+            <div class="data-row"><span>Temperature</span> <span id="temperature" class="data-value">0</span></div>
+        </div>
+
+        <div class="panel">
+            <h2>IMU / Orientation</h2>
+            <div class="data-row"><span>Pitch</span> <span class="data-value"><span id="pitch">0.00</span>°</span></div>
+            <div class="data-row"><span>Yaw</span> <span class="data-value"><span id="yaw">0.00</span>°</span></div>
+            <div class="data-row"><span>Roll</span> <span class="data-value"><span id="roll">0.00</span>°</span></div>
+        </div>
+
+        <div class="panel">
+            <h2>Telemetry Stream</h2>
+            <div class="data-row"><span>LAT</span> <span id="lat" class="data-value">0.000000</span></div>
+            <div class="data-row"><span>LON</span> <span id="lon" class="data-value">0.000000</span></div>
+            <div class="data-row"><span>SYS_STATE</span> <span id="state" class="data-value">0</span></div>
+        </div>
+    </div>
+
+    <div class="controls">
+        <button onclick="sendCommand('PING')">Initialize Ping</button>
+        <button onclick="sendCommand('ARM')">Arm Ordnance</button>
+        <button class="danger" onclick="sendCommand('ABORT')">Emergency Abort</button>
+    </div>
+
+    <div class="terminal-wrapper">
+        <div class="terminal-header">syslog // raw_telemetry_feed</div>
+        <div id="raw-log"></div>
+    </div>
+
+    <script>
+        const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const wsUrl = `${wsProtocol}//${window.location.host}/ws`;
+        
+        let socket;
+        const logBox = document.getElementById('raw-log');
+
+        function connect() {
+            socket = new WebSocket(wsUrl);
+
+            socket.onopen = () => {
+                const statusEl = document.getElementById('connection-status');
+                statusEl.innerText = "UPLINK_SECURED";
+                statusEl.style.color = "var(--green)";
+                statusEl.style.borderColor = "var(--green)";
+                statusEl.style.backgroundColor = "rgba(166, 227, 161, 0.1)";
+                appendLog("SYS", "WebSocket connection established to Ground Station.");
+            };
+
+            socket.onmessage = (event) => {
+                appendLog("RX", event.data);
+
+                try {
+                    const data = JSON.parse(event.data);
+                    
+                    document.getElementById('pressure').innerText = data.pressure + " hPa";
+                    document.getElementById('temperature').innerText = data.temperature + " °C";
+                    
+                    document.getElementById('pitch').innerText = data.pitch.toFixed(2);
+                    document.getElementById('yaw').innerText = data.yaw.toFixed(2);
+                    document.getElementById('roll').innerText = data.roll.toFixed(2);
+                    
+                    document.getElementById('lat').innerText = data.lat.toFixed(6);
+                    document.getElementById('lon').innerText = data.lon.toFixed(6);
+                    document.getElementById('state').innerText = "0x0" + data.state;
+                } catch (e) {
+                    appendLog("ERR", "Failed to parse telemetry JSON!");
+                }
+            };
+
+            socket.onclose = () => {
+                const statusEl = document.getElementById('connection-status');
+                statusEl.innerText = "LINK_SEVERED";
+                statusEl.style.color = "var(--red)";
+                statusEl.style.borderColor = "var(--red)";
+                statusEl.style.backgroundColor = "rgba(243, 139, 168, 0.1)";
+                
+                appendLog("SYS", "Connection lost. Attempting to re-establish link...");
+                setTimeout(connect, 2000); 
+            };
+        }
+
+        function sendCommand(cmd) {
+            if (socket && socket.readyState === WebSocket.OPEN) {
+                socket.send(cmd);
+                appendLog("TX", `Uplink command sent: ${cmd}`);
+            } else {
+                appendLog("ERR", `Failed to send ${cmd}: Uplink is down.`);
+            }
+        }
+
+        function appendLog(type, message) {
+            const time = new Date().toISOString().substring(11, 23);
+            const entry = document.createElement('div');
+            entry.className = 'log-entry';
+            
+            // Catppuccin color coding for terminal tags
+            let typeColor = "var(--green)"; // Default RX Green
+            if (type === "TX") typeColor = "var(--blue)";
+            if (type === "ERR") typeColor = "var(--red)";
+            if (type === "SYS" || type === "SYSTEM") typeColor = "var(--yellow)";
+
+            entry.innerHTML = `<span class="log-time">[${time}]</span><span style="color: ${typeColor}; font-weight: bold;">[${type}]</span> <span style="color: var(--text);">${message}</span>`;
+            
+            logBox.appendChild(entry);
+            logBox.scrollTop = logBox.scrollHeight;
+
+            if (logBox.childElementCount > 50) {
+                logBox.removeChild(logBox.firstChild);
+            }
+        }
+
+        connect();
+    </script>
+</body>
+</html>
