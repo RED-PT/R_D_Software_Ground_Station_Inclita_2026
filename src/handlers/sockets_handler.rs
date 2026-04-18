@@ -9,7 +9,7 @@ use axum::{
 use serde_json;
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, Mutex};
-use crate::hardware_cfg::{HardwareError, Hardware, LoRaHandle}; // Import from hardware module
+use crate::hardware_cfg::Hardware; // Import from hardware module
 use crate::telemetry::data::Telemetry;
 pub struct AppState {
     // Broadcasts telemetry to all connected WebSocket clients

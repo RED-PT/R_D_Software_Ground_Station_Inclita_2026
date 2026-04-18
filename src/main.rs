@@ -1,17 +1,20 @@
 use axum::{
+    Json,
     Router,
-    routing::get,
+    routing::{get, post},
 };
 use std::sync::Arc;
 use tokio::{sync::{broadcast, mpsc, Mutex}, time::Duration};
 use tower_http::services::ServeFile;
+// Required to use `.is_high()` on the linux-embedded-hal pins
+use embedded_hal::digital::v2::InputPin; 
 
-// Import our custom modules
-pub use crate::hardware_cfg::{Hardware, LoRaHandle, HardwareError};
-pub use crate::data::Telemetry; // Using data.rs based on your file structure
+pub use crate::hardware_cfg::{Hardware, HardwareError};
+pub use crate::telemetry::data::Telemetry;
 
+mod mock;
 mod handlers;
-mod data; 
+mod telemetry;
 mod hardware_cfg;
 use handlers::sockets_handler::{AppState, ws_handler};
 
@@ -22,10 +25,11 @@ async fn main() {
     let (telemetry_tx, _) = broadcast::channel::<Telemetry>(100);
     let (command_tx, mut command_rx) = mpsc::channel::<String>(32);
 
-    const CS_GPIO: u8 = 10;
-    const RST_GPIO: u8 = 5;
+    // linux-embedded-hal strictly expects u64 for pin numbers
+    const CS_GPIO: u64 = 10;
+    const RST_GPIO: u64 = 5;
     
-    match Hardware::new(CS_GPIO, RST_GPIO) {
+    match Hardware::new(CS_GPIO.into(), RST_GPIO.into()) {
         Ok(hw) => {
             let shared_state = Arc::new(AppState {
                 telemetry_tx: telemetry_tx.clone(),
@@ -33,38 +37,35 @@ async fn main() {
                 hardware: Arc::new(Mutex::new(hw)),
             });
 
-            #[cfg(feature = "lora")]
+            // Initialize the radio
             {
-                if let Err(e) = shared_state.hardware.lock().await.init_radio() {
+                let mut hw_lock = shared_state.hardware.lock().await;
+                if let Err(e) = hw_lock.init_radio() {
                     eprintln!("RFM95 initialization failed: {}", e);
                     std::process::exit(1);
                 }
-                println!("RFM95 LoRa Radio initialized!");
+                println!("RFM95 LoRa Radio initialized via linux-embedded-hal!");
             }
 
             // 1. THE INGEST TASK
             let ingest_state = shared_state.clone();
             tokio::task::spawn_blocking(move || {
                 loop {
-                    // Lock hardware to poll and read
-                    if let Ok(mut hw) = ingest_state.hardware.blocking_lock() {
+                    { 
+                        // Safely lock the hardware for this brief check
+                        let mut hw = ingest_state.hardware.blocking_lock();
                         
-                        // FIX: Use .is_high() instead of poll_interrupt
-                        if hw.dio0_pin.is_high() {
-                            if let Some(ref mut handle) = hw.radio {
-                                // sx127x_lora specific read
-                                if let Ok(buffer) = handle.radio.read_packet() {
-                                    
-                                    // FIX: Requires bincode = "1.3.3" in Cargo.toml
-                                    if let Ok(data) = bincode::deserialize::<Telemetry>(&buffer) {
-                                        println!("Received Telemetry! Pressure: {}", data.pressure);
-                                        let _ = ingest_state.telemetry_tx.send(data);
-                                    }
+                        // embedded-hal's v2 traits return a Result for is_high(), so we safely unwrap it
+                        if hw.dio0_pin.is_high().unwrap_or(false) {
+                            if let Ok(ref buffer) = hw.read_packet() {
+                                if let Ok(data) = bincode::deserialize::<Telemetry>(buffer) {
+                                    println!("Received Telemetry! Altitude/Pressure: {}", data.pressure);
+                                    let _ = ingest_state.telemetry_tx.send(data);
                                 }
                             }
                         }
-                    }
-                    // Prevent CPU hogging
+                    } 
+                    // Briefly sleep so the transmit task can grab the lock if needed
                     std::thread::sleep(Duration::from_millis(10));
                 }
             });
@@ -81,11 +82,12 @@ async fn main() {
                     }
                 }
             });
-
+mock::spawn_mock_telemetry_task(shared_state.telemetry_tx.clone());
             // 3. THE WEB SERVER
             let app = Router::new()
                 .nest_service("/", ServeFile::new("html/index.html"))
                 .route("/ws", get(ws_handler))
+                .route("/mock", post(mock_ingest))
                 .with_state(shared_state);
 
             let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
@@ -105,9 +107,6 @@ async fn main() {
 
 pub async fn shutdown_signal() {
     tokio::signal::ctrl_c().await.unwrap();
-    println!("Shutdown signal received.");
-}
-async fn mock_ingest(_request: Json<String>) -> String {
-    "Mock response".to_string()
+    println!("Shutdown signal received. Ground station powering down.");
 }
 
