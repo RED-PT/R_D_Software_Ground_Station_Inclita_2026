@@ -15,6 +15,10 @@ tower-http = { version = "0.5.2", features = ["fs"] }
 linux-embedded-hal = "0.3.2"
 sx127x_lora = "0.3.1"
 embedded-hal = "0.2.7"
+csv = "1.4.0"
+dotenvy = "0.15.7"
+tracing = "0.1.44"
+tracing-subscriber = {version ="0.3.23", features=["env-filter"]}
 
 
 [features]
