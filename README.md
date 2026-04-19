@@ -2,7 +2,7 @@
 
 **RED-PT R&D 202&**
 
-The Ground Station for the Inclita Mission. Built in Rust, this Ground Station acts as the bridge between the rocket's LoRa radio downlink and the mission control. It features a lightweight asynchronous backend and a real-time WebSocket dashboard.
+The Ground Station for the Inclita Mission. Built in Rust, this Ground Station acts as the bridge between the rocket's LoRa radio downlink and the mission control. Still very WIP.
 
 ## Features
 
@@ -14,33 +14,36 @@ The Ground Station for the Inclita Mission. Built in Rust, this Ground Station a
 ## Technology Stack
 
 * **Backend:** Rust, Tokio (Async runtime), Axum (Web server)
-* **Real-Time Link:** WebSockets (`axum::extract::ws`)
+* **Web Framework:** [Axum](https://github.com/tokio-rs/axum)
 * **Hardware Interface:** `linux-embedded-hal`, `sx127x_lora` (SPI communication)
-* **Frontend:** Vanilla HTML/CSS/JS (Catppuccin Mocha Theme)
-
----
+* **Frontend:** VibeCoded HTML/CSS/JS (Catppuccin Mocha Theme)
+* **Serialization:** `serde` & `bincode` 
 
 ## Architecture Overview (as of now)
 
 ```
-── handlers
-│   ├── mod.rs
-│   └── sockets_handler.rs
+.
+├── handlers
+│   ├── helper_foo.rs
+│   ├── mod.rs
+│   └── sockets_handler.rs
 ├── hardware_cfg.rs
 ├── main.rs
 ├── mock.rs
 └── telemetry
     ├── data.rs
     └── mod.rs
-
 ```
 
 The system is designed with concurrent Tokio tasks communicating via channels:
 
-1. **LoRa Receiver Task:** Listens to the SPI hardware for incoming packets, deserializes them into `Telemetry` structs, and pushes them to a broadcast channel.
-2. **WebSocket Handler:** Subscribes to the telemetry broadcast and instantly forwards the JSON data to all connected web browsers.
-3. **LoRa Transmitter Task:** Listens to a Multi-Producer Single-Consumer (MPSC) channel for command strings coming from the web UI and transmits them over the radio.
-
+**Actor-Based Architecture:** Uses the Actor Pattern to manage hardware. A single dedicated task owns the LoRa radio, eliminating the  `Mutex` locks I was using.
+* ** Data Logger:** Automatically streams all incoming telemetry to `flight_data.csv`.
+* **Professional Tracing:** Integrated with the `tracing` ecosystem for color-coded, level-based logging (INFO, WARN, ERROR) with precise file and line-number metadata.
+* **Dynamic Configuration:** configurable via `.env` files. Change SPI pins, server ports, or log verbosity without recompiling the Rust binary.
+* **Dual-Mode Execution:** 
+    * **Mock Mode:** Simulates telemetry for UI/Logic development on any PC.
+    * **Hardware Mode:** Direct SPI communication with RFM95/SX127x LoRa modules on Raspberry Pi.
 ---
 
 ## Getting Started
@@ -62,7 +65,7 @@ cd R_D_Software_Ground_Station_Inclita_2026
 
 cargo run --features mock
 ```
-
+Create a `.env` file in the root directory to define your environment.
 ### 2. Hardware Mode (Live Deployment)
 
 When deploying to the Raspberry Pi at the launch site, run the standard build. This will bind to /dev/spidev0.0 and communicate with the SX127x LoRa module.
